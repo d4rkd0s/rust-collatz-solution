@@ -386,6 +386,11 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
     let mut bits_window: VecDeque<usize> = VecDeque::with_capacity(max_steps.max(1));
     let max_points = max_steps.max(1);
     let steps_per_tick: usize = (max_points / 60).clamp(1, 2000);
+    let one = BigUint::one();
+    // Local RNG for fallback samples to keep animation moving
+    let mut vrng = Rng::seeded();
+    let rand_low: BigUint = BigUint::one() << 68;
+    let rand_high_inclusive: BigUint = (BigUint::one() << 2000) - BigUint::one();
     
     // Initial clear
     clear_buffer(&mut buffer, 0xFFFFFFFF);
@@ -400,6 +405,7 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
         let mut should_redraw = false;
         
         // Check for new messages
+        let mut had_new_draw = false;
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 VizMsg::Draw(start) => {
@@ -407,6 +413,7 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
                     current_n = Some(start);
                     bits_window.clear();
                     should_redraw = true;
+                    had_new_draw = true;
                 }
                 VizMsg::Stats { processed, sps } => {
                     window.set_title(&format!("Collatz Visualizer  |  processed={processed}  |  {sps:.1} samples/s"));
@@ -421,8 +428,13 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
                 bits_window.push_back(bit_len_biguint(n).max(1));
                 if bits_window.len() > max_points { bits_window.pop_front(); }
                 // Advance
-                if *n == BigUint::one() { break; }
+                if *n == one { break; }
                 *n = collatz_next(n);
+            }
+            // If we reached 1 and didn't receive a new start, pick a fallback sample
+            if *n == one && !had_new_draw {
+                *n = vrng.gen_range_biguint(&rand_low, &rand_high_inclusive);
+                bits_window.clear();
             }
             should_redraw = true;
         }
