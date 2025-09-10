@@ -23,7 +23,8 @@ What it does
 - Scans huge numbers (BigUint, up to 2^2000+)
 - Detects loops/runaways with O(1) memory
 - Writes to disk only when a finding occurs (`solution.txt`)
-- Visualizer shows the current line and the number being tested
+- Visualizer shows a current line and the number being tested
+- Even with visualizer, it still runs many lines at full speed in the background
 
 Handy flags
 -----------
