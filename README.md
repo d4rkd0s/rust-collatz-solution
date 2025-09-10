@@ -1,6 +1,10 @@
 # Rust Collatz Solution
 
-A high-performance Rust implementation for searching potential counterexamples to the Collatz conjecture using arbitrary-precision arithmetic.
+A high-performance Rust implementation for randomly searching potential counterexamples to the Collatz conjecture using arbitrary-precision arithmetic. **The random search space by default is 2^68 to 2^2000.**
+
+<img width="500" height="531" alt="image" src="https://github.com/user-attachments/assets/05894ec5-fdf6-407f-ba98-85f0ee8044a4" />
+
+To run just download the repo and run, `cargo run`.
 
 ## Overview
 
