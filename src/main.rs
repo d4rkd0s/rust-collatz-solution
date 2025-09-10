@@ -1,6 +1,6 @@
 use std::env;
-use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
 use std::collections::VecDeque;
@@ -64,27 +64,12 @@ fn detect_outcome(start: &BigUint) -> Outcome {
     Outcome::NontrivialCycle
 }
 
-fn read_last_start(path: &str) -> Option<BigUint> {
-    let f = File::open(path).ok()?;
-    let reader = BufReader::new(f);
-    let mut last: Option<BigUint> = None;
-    for l in reader.lines().map_while(Result::ok) {
-        let t = l.trim();
-        if t.is_empty() { continue; }
-        if let Ok(v) = t.parse::<BigUint>() { last = Some(v); }
-    }
-    last
-}
-
 #[allow(clippy::type_complexity)]
-fn parse_args() -> (Option<BigUint>, Option<u64>, bool, String, String, u64, bool, bool, u64, u64) {
+fn parse_args() -> (Option<BigUint>, Option<u64>, String, bool, bool, u64, u64) {
     let mut start: Option<BigUint> = None;
     let mut count: Option<u64> = None;
-    let mut resume = true;
-    let mut output = String::from("progress.txt");
     let mut solution = String::from("solution.txt");
-    let mut progress_interval: u64 = 1000;
-    let mut random = false; // default OFF
+    let mut random = true; // default ON
     let mut viz = true;    // default ON
     let mut viz_interval: u64 = 1_000; // draw often by default
     let mut viz_max_steps: u64 = 10_000; // limit steps when rendering
@@ -98,16 +83,8 @@ fn parse_args() -> (Option<BigUint>, Option<u64>, bool, String, String, u64, boo
             "--count" | "-n" => {
                 if let Some(v) = args.next() { count = v.parse::<u64>().ok(); }
             }
-            "--resume" => resume = true,
-            "--no-resume" => resume = false,
-            "--output" | "-o" | "--progress" => {
-                if let Some(v) = args.next() { output = v; }
-            }
             "--solution" => {
                 if let Some(v) = args.next() { solution = v; }
-            }
-            "--progress-interval" | "-pi" => {
-                if let Some(v) = args.next() { if let Ok(n) = v.parse::<u64>() { progress_interval = n; } }
             }
             "--random" => {
                 random = true;
@@ -139,46 +116,24 @@ fn parse_args() -> (Option<BigUint>, Option<u64>, bool, String, String, u64, boo
         }
     }
 
-    (start, count, resume, output, solution, progress_interval, random, viz, viz_interval, viz_max_steps)
+    (start, count, solution, random, viz, viz_interval, viz_max_steps)
 }
 
 fn real_main() -> Result<(), Box<dyn std::error::Error>> {
-    let (start_arg, count_arg, resume, output, solution, progress_interval_arg, random, viz, viz_interval_arg, viz_max_steps) = parse_args();
+    let (start_arg, count_arg, solution, random, viz, viz_interval_arg, viz_max_steps) = parse_args();
 
-    // Determine start number, possibly resuming from last written line
-    // Default start is 2^68 when not resuming and not provided explicitly.
+    // Determine start number. Default start is 2^68 when not provided explicitly.
     let default_start: BigUint = BigUint::one() << 68; // 2^68
-    let start: BigUint = if let Some(s) = start_arg {
-        s
-    } else if resume {
-        match read_last_start(&output) {
-            Some(last) => last + BigUint::one(),
-            None => default_start,
-        }
-    } else {
-        default_start
-    };
+    let start: BigUint = start_arg.unwrap_or(default_start);
 
     let count = count_arg; // None => run indefinitely
-    let progress_interval = progress_interval_arg.max(1);
     let viz_interval = viz_interval_arg.max(1);
-
-    let progress_path = Path::new(&output);
     let solution_path = Path::new(&solution);
 
     if random {
-        eprintln!(
-            "Random mode: sampling starts in [2^68, 2^2000-1]; progress in {}",
-            progress_path.display()
-        );
+        eprintln!("Random mode: sampling starts in [2^68, 2^2000-1]");
     } else {
-        eprintln!("Starting at {}{} -> recording progress in {}", start,
-            if resume { " (resume)" } else { "" }, progress_path.display());
-    }
-
-    // Ensure the progress file exists and reflects the starting point (sequential mode only).
-    if !random {
-        write_progress_number(progress_path, &start)?;
+        eprintln!("Starting sequential scan at {start}");
     }
 
     let mut processed: u64 = 0;
@@ -208,10 +163,7 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let outcome = detect_outcome(&current);
 
-        // Update progress occasionally (single-line file), only in sequential mode
-        if !random && processed % progress_interval == 0 {
-            write_progress_number(progress_path, &current)?;
-        }
+        // No progress writes in random or sequential modes
 
         // Send trajectory data at configured cadence
         if let Some(ref tx) = viz_sender {
@@ -231,15 +183,12 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             Outcome::NontrivialCycle => {
                 eprintln!("Found nontrivial loop starting from {current}.");
                 write_solution(solution_path, &format!("NONTRIVIAL_CYCLE_START {current}"))?;
-                // Also update progress to this current number (sequential mode only)
-                if !random { write_progress_number(progress_path, &current)?; }
                 break;
             }
             Outcome::StepsOverflow => {
                 let kind = "RUNAWAY_STEPS_OVERFLOW_START";
                 eprintln!("Detected runaway ({kind}). Start: {current}");
                 write_solution(solution_path, &format!("{kind} {current}"))?;
-                if !random { write_progress_number(progress_path, &current)?; }
                 break;
             }
         }
@@ -279,16 +228,6 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     
-    Ok(())
-}
-
-fn write_progress_number(path: &Path, value: &BigUint) -> std::io::Result<()> {
-    // Truncate and write a single line with the current start
-    let mut f = OpenOptions::new().create(true).write(true).truncate(true).open(path)?;
-    writeln!(f, "{}", value.to_str_radix(10))?;
-    f.flush()?;
-    // Ensure durability so we don't lose our place on crashes
-    f.sync_all()?;
     Ok(())
 }
 
