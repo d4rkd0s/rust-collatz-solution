@@ -19,7 +19,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             bin: rust_collatz_solution
-            archive: rust_collatz_solution-linux-x86_64.tar.gz
+            archive: rust_collatz_solution-x86_64-linux-gnu.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             bin: rust_collatz_solution.exe
@@ -92,4 +92,3 @@ jobs:
           files: dist/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
