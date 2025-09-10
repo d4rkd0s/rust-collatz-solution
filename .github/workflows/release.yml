@@ -1,0 +1,95 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin: rust_collatz_solution
+            archive: rust_collatz_solution-linux-x86_64.tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin: rust_collatz_solution.exe
+            archive: rust_collatz_solution-windows-x86_64.zip
+          - os: windows-latest
+            target: i686-pc-windows-msvc
+            bin: rust_collatz_solution.exe
+            archive: rust_collatz_solution-windows-i686.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust (${{ matrix.target }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/${{ matrix.bin }} package/
+          cp README.md package/ || true
+          tar -C package -czf ${{ matrix.archive }} .
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p package
+          cp target/${{ matrix.target }}/release/${{ matrix.bin }} package/
+          cp README.md package/ || true
+          7z a -tzip ${{ matrix.archive }} package/*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [ build ]
+    steps:
+      - name: Compute short SHA
+        id: vars
+        shell: bash
+        run: echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          name: build-${{ steps.vars.outputs.short_sha }}
+          tag_name: build-${{ steps.vars.outputs.short_sha }}
+          draft: false
+          prerelease: false
+          files: dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
