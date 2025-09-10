@@ -322,6 +322,7 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
     let mut buffer = vec![0u32; VIZ_W * VIZ_H];
     // Streaming animation state
     let mut current_n: Option<BigUint> = None;
+    let mut current_label: Option<String> = None;
     let mut bits_window: VecDeque<usize> = VecDeque::with_capacity(max_steps.max(1));
     let max_points = max_steps.max(1);
     let steps_per_tick: usize = (max_points / 60).clamp(1, 2000);
@@ -349,6 +350,7 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
             match msg {
                 VizMsg::Draw(start) => {
                     // Begin animating this trajectory from scratch
+                    current_label = Some(short_decimal(&start, 12, 12));
                     current_n = Some(start);
                     bits_window.clear();
                     should_redraw = true;
@@ -373,6 +375,8 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
             // If we reached 1 and didn't receive a new start, pick a fallback sample
             if *n == one && !had_new_draw {
                 *n = vrng.gen_range_biguint(&rand_low, &rand_high_inclusive);
+                // Update the on-screen label for the new start
+                current_label = Some(short_decimal(&*n, 12, 12));
                 bits_window.clear();
             }
             should_redraw = true;
@@ -397,6 +401,17 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
                 prev = curr;
             }
             
+            // Draw seed label bottom-left with heading
+            if let Some(ref lbl) = current_label {
+                let scale_num: i32 = 2; // make number larger
+                let num_h = (SMALL_FONT_H as i32) * scale_num;
+                let gap = 4;
+                let num_y = (VIZ_H as i32) - 10 - num_h;
+                let heading_y = (num_y - gap - SMALL_FONT_H as i32).max(0);
+                draw_text_small(&mut buffer, 12, heading_y, "NUMBER BEING TESTED:", 0xFF000000);
+                draw_text_small_scaled(&mut buffer, 12, num_y, lbl, 0xFF000000, scale_num as usize);
+            }
+
             let _ = window.update_with_buffer(&buffer, VIZ_W, VIZ_H);
         } else {
             window.update();
@@ -464,6 +479,97 @@ fn draw_axes(buf: &mut [u32], pad: usize, color: u32) {
     let y0 = pad; let y1 = VIZ_H - pad;
     for x in x0..=x1 { buf[y1 * VIZ_W + x] = color; }
     for y in y0..=y1 { buf[y * VIZ_W + x0] = color; }
+}
+
+// ---------- Small bitmap text rendering for digits and '.' ----------
+const SMALL_FONT_W: usize = 5;
+const SMALL_FONT_H: usize = 7;
+
+fn draw_text_small(buf: &mut [u32], x: i32, y: i32, text: &str, color: u32) {
+    let mut cx = x;
+    for ch in text.chars() {
+        if let Some(g) = glyph_for(ch) {
+            draw_glyph_small(buf, cx, y, &g, color);
+            cx += (SMALL_FONT_W as i32) + 2; // 1px spacing
+        } else if ch == ' ' {
+            cx += (SMALL_FONT_W as i32) + 2;
+        }
+    }
+}
+
+fn draw_glyph_small(buf: &mut [u32], x: i32, y: i32, glyph: &[u8; SMALL_FONT_H], color: u32) {
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..SMALL_FONT_W {
+            // Bits are in lower 5 bits of the byte; MSB of 5 at position 4
+            let on = (bits >> (SMALL_FONT_W as u8 - 1 - col as u8)) & 1 == 1;
+            if on { plot(x + col as i32, y + row as i32, color, buf); }
+        }
+    }
+}
+
+fn draw_text_small_scaled(buf: &mut [u32], x: i32, y: i32, text: &str, color: u32, scale: usize) {
+    let s = scale.max(1) as i32;
+    let mut cx = x;
+    for ch in text.chars() {
+        if ch == ' ' { cx += (SMALL_FONT_W as i32 + 2) * s; continue; }
+        if let Some(g) = glyph_for(ch) {
+            draw_glyph_small_scaled(buf, cx, y, &g, color, s as usize);
+            cx += ((SMALL_FONT_W as i32) + 2) * s;
+        }
+    }
+}
+
+fn draw_glyph_small_scaled(buf: &mut [u32], x: i32, y: i32, glyph: &[u8; SMALL_FONT_H], color: u32, scale: usize) {
+    let s = scale.max(1) as i32;
+    for (row, bits) in glyph.iter().enumerate() {
+        for col in 0..SMALL_FONT_W {
+            let on = (bits >> (SMALL_FONT_W as u8 - 1 - col as u8)) & 1 == 1;
+            if on {
+                for dy in 0..s {
+                    for dx in 0..s {
+                        plot(x + col as i32 * s + dx, y + row as i32 * s + dy, color, buf);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn glyph_for(ch: char) -> Option<[u8; SMALL_FONT_H]> {
+    match ch {
+        '0' => Some([0b01110,0b10001,0b10011,0b10101,0b11001,0b10001,0b01110]),
+        '1' => Some([0b00100,0b01100,0b00100,0b00100,0b00100,0b00100,0b01110]),
+        '2' => Some([0b01110,0b10001,0b00001,0b00010,0b00100,0b01000,0b11111]),
+        '3' => Some([0b01110,0b10001,0b00001,0b00110,0b00001,0b10001,0b01110]),
+        '4' => Some([0b00010,0b00110,0b01010,0b10010,0b11111,0b00010,0b00010]),
+        '5' => Some([0b11111,0b10000,0b11110,0b00001,0b00001,0b10001,0b01110]),
+        '6' => Some([0b00110,0b01000,0b10000,0b11110,0b10001,0b10001,0b01110]),
+        '7' => Some([0b11111,0b00001,0b00010,0b00100,0b01000,0b01000,0b01000]),
+        '8' => Some([0b01110,0b10001,0b10001,0b01110,0b10001,0b10001,0b01110]),
+        '9' => Some([0b01110,0b10001,0b10001,0b01111,0b00001,0b00010,0b11100]),
+        '.' => Some([0b00000,0b00000,0b00000,0b00000,0b00000,0b00100,0b00100]),
+        ':' => Some([0b00000,0b00100,0b00100,0b00000,0b00100,0b00100,0b00000]),
+        'N' => Some([0b10001,0b11001,0b10101,0b10011,0b10001,0b10001,0b00000]),
+        'U' => Some([0b10001,0b10001,0b10001,0b10001,0b10001,0b01110,0b00000]),
+        'M' => Some([0b10001,0b11011,0b10101,0b10101,0b10001,0b10001,0b00000]),
+        'B' => Some([0b11110,0b10001,0b10001,0b11110,0b10001,0b10001,0b11110]),
+        'E' => Some([0b11111,0b10000,0b10000,0b11110,0b10000,0b10000,0b11111]),
+        'R' => Some([0b11110,0b10001,0b10001,0b11110,0b10100,0b10010,0b10001]),
+        'I' => Some([0b01110,0b00100,0b00100,0b00100,0b00100,0b00100,0b01110]),
+        'G' => Some([0b01110,0b10001,0b10000,0b10111,0b10001,0b10001,0b01110]),
+        'T' => Some([0b11111,0b00100,0b00100,0b00100,0b00100,0b00100,0b00100]),
+        'S' => Some([0b01111,0b10000,0b10000,0b01110,0b00001,0b00001,0b11110]),
+        'D' => Some([0b11110,0b10001,0b10001,0b10001,0b10001,0b10001,0b11110]),
+        _ => None,
+    }
+}
+
+fn short_decimal(n: &BigUint, head: usize, tail: usize) -> String {
+    let s = n.to_str_radix(10);
+    if s.len() <= head + tail + 3 { return s; }
+    let start = &s[..head.min(s.len())];
+    let end = &s[s.len()-tail.min(s.len())..];
+    format!("{}...{}", start, end)
 }
 
 fn main() {
