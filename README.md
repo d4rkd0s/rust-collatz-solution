@@ -3,7 +3,7 @@ rust_collatz_solution
 
 Collatz explorer with big‑integers and a tiny live visualizer. One command to try it.
 
-<img width="500" height="531" alt="Visualizer" src="https://github.com/user-attachments/assets/05894ec5-fdf6-407f-ba98-85f0ee8044a4" />
+<img width="1280" height="640" alt="rust" src="https://github.com/user-attachments/assets/fac9e768-e5ce-4a73-a8b4-c076c4c22845" />
 
 Quick Start
 -----------
