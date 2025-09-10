@@ -3,6 +3,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH, Duration, Instant};
+use std::collections::VecDeque;
 use std::sync::mpsc::{self, SyncSender, Receiver};
 use std::thread;
 
@@ -175,8 +176,10 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             if resume { " (resume)" } else { "" }, progress_path.display());
     }
 
-    // Ensure the progress file exists and reflects the starting point.
-    write_progress_number(progress_path, &start)?;
+    // Ensure the progress file exists and reflects the starting point (sequential mode only).
+    if !random {
+        write_progress_number(progress_path, &start)?;
+    }
 
     let mut processed: u64 = 0;
 
@@ -205,8 +208,8 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let outcome = detect_outcome(&current);
 
-        // Update progress occasionally (single-line file)
-        if processed % progress_interval == 0 {
+        // Update progress occasionally (single-line file), only in sequential mode
+        if !random && processed % progress_interval == 0 {
             write_progress_number(progress_path, &current)?;
         }
 
@@ -228,15 +231,15 @@ fn real_main() -> Result<(), Box<dyn std::error::Error>> {
             Outcome::NontrivialCycle => {
                 eprintln!("Found nontrivial loop starting from {current}.");
                 write_solution(solution_path, &format!("NONTRIVIAL_CYCLE_START {current}"))?;
-                // Also update progress to this current number
-                write_progress_number(progress_path, &current)?;
+                // Also update progress to this current number (sequential mode only)
+                if !random { write_progress_number(progress_path, &current)?; }
                 break;
             }
             Outcome::StepsOverflow => {
                 let kind = "RUNAWAY_STEPS_OVERFLOW_START";
                 eprintln!("Detected runaway ({kind}). Start: {current}");
                 write_solution(solution_path, &format!("{kind} {current}"))?;
-                write_progress_number(progress_path, &current)?;
+                if !random { write_progress_number(progress_path, &current)?; }
                 break;
             }
         }
@@ -378,7 +381,11 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
     };
 
     let mut buffer = vec![0u32; VIZ_W * VIZ_H];
-    let mut trajectory_data: Vec<(usize, usize)> = Vec::new();
+    // Streaming animation state
+    let mut current_n: Option<BigUint> = None;
+    let mut bits_window: VecDeque<usize> = VecDeque::with_capacity(max_steps.max(1));
+    let max_points = max_steps.max(1);
+    let steps_per_tick: usize = (max_points / 60).clamp(1, 2000);
     
     // Initial clear
     clear_buffer(&mut buffer, 0xFFFFFFFF);
@@ -396,8 +403,9 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
         while let Ok(msg) = rx.try_recv() {
             match msg {
                 VizMsg::Draw(start) => {
-                    // Store trajectory data instead of rendering immediately
-                    trajectory_data = compute_trajectory_points(&start, max_steps);
+                    // Begin animating this trajectory from scratch
+                    current_n = Some(start);
+                    bits_window.clear();
                     should_redraw = true;
                 }
                 VizMsg::Stats { processed, sps } => {
@@ -406,19 +414,36 @@ fn run_viz(rx: Receiver<VizMsg>, max_steps: usize) {
             }
         }
 
+        // Incrementally extend trajectory for animation
+        if let Some(ref mut n) = current_n {
+            for _ in 0..steps_per_tick {
+                // Record current magnitude
+                bits_window.push_back(bit_len_biguint(n).max(1));
+                if bits_window.len() > max_points { bits_window.pop_front(); }
+                // Advance
+                if *n == BigUint::one() { break; }
+                *n = collatz_next(n);
+            }
+            should_redraw = true;
+        }
+
         // Only redraw when we have new data
-        if should_redraw && !trajectory_data.is_empty() {
+        if should_redraw && bits_window.len() >= 2 {
             clear_buffer(&mut buffer, 0xFFFFFFFF);
             draw_grid(&mut buffer, 50, 0xFFE0E0E0);
             draw_axes(&mut buffer, 10, 0xFF000000);
             
-            // Draw the entire trajectory
-            if trajectory_data.len() >= 2 {
-                for i in 1..trajectory_data.len() {
-                    let prev = trajectory_data[i-1];
-                    let curr = trajectory_data[i];
-                    draw_line(prev.0 as i32, prev.1 as i32, curr.0 as i32, curr.1 as i32, 0xFF000000, &mut buffer);
-                }
+            // Draw the visible window
+            let pad = 10usize;
+            let w = VIZ_W - 2*pad;
+            let h = VIZ_H - 2*pad;
+            let len = bits_window.len();
+            let max_bits = *bits_window.iter().max().unwrap_or(&1);
+            let mut prev = point_xy(0, bits_window[0], len, max_bits, w, h, pad);
+            for (i, bits) in bits_window.iter().enumerate().skip(1) {
+                let curr = point_xy(i, *bits, len, max_bits, w, h, pad);
+                draw_line(prev.0 as i32, prev.1 as i32, curr.0 as i32, curr.1 as i32, 0xFF000000, &mut buffer);
+                prev = curr;
             }
             
             let _ = window.update_with_buffer(&buffer, VIZ_W, VIZ_H);
@@ -434,30 +459,7 @@ fn clear_buffer(buf: &mut [u32], color: u32) {
     for px in buf.iter_mut() { *px = color; }
 }
 
-fn compute_trajectory_points(start: &BigUint, max_steps: usize) -> Vec<(usize, usize)> {
-    let mut values_bits: Vec<usize> = Vec::with_capacity(max_steps.min(1000));
-    let mut n = start.clone();
-    let one = BigUint::one();
-    
-    for _ in 0..max_steps.min(1000) {
-        values_bits.push(bit_len_biguint(&n).max(1));
-        if n == one { break; }
-        n = collatz_next(&n);
-    }
-    
-    if values_bits.is_empty() { return Vec::new(); }
-    let max_bits = *values_bits.iter().max().unwrap_or(&1);
-    let len = values_bits.len();
-    
-    let pad = 10usize;
-    let w = VIZ_W - 2*pad;
-    let h = VIZ_H - 2*pad;
-    
-    values_bits.into_iter()
-        .enumerate()
-        .map(|(i, bits)| point_xy(i, bits, len, max_bits, w, h, pad))
-        .collect()
-}
+// streaming visualization no longer uses a precomputed trajectory function
 
 fn point_xy(i: usize, bits: usize, len: usize, max_bits: usize, w: usize, h: usize, pad: usize) -> (usize, usize) {
     let x = pad + (i.saturating_mul(w.saturating_sub(1))) / (len.saturating_sub(1).max(1));
